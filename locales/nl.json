@@ -66,5 +66,9 @@
     "cert_issued_date": "Uitgiftedatum",
     "cert_close": "Sluiten",
     "cert_signed": "Directeur Naturalistische Studies",
-    "cert_footer": "— Officieel Veldonderzoeksrecord —"
+    "cert_footer": "— Officieel Veldonderzoeksrecord —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

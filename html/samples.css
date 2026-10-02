@@ -41,20 +41,6 @@ html, body {
 
 .hidden { display: none !important; }
 
-/* ============ VIGNETTE ============ */
-#vignette {
-    position: fixed;
-    inset: 0;
-    z-index: 900;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    background:
-        radial-gradient(ellipse at center, transparent 32%, rgba(0, 0, 0, 0.72) 100%),
-        rgba(0, 0, 0, 0.35);
-}
-body.menus-active #vignette { opacity: 1; }
-
 /* ============ PANEL ROOT ============ */
 .panel-root {
     position: fixed;
@@ -707,52 +693,9 @@ body.menus-active #vignette { opacity: 1; }
     opacity: 0.6;
 }
 
-/* ============ TOASTS ============ */
-.toast-stack {
-    position: fixed;
-    right: 22px;
-    bottom: 22px;
-    z-index: 1200;
+/* ============ FOOTER ACTIONS ============ */
+.panel-actions {
     display: flex;
-    flex-direction: column-reverse;
     gap: 10px;
-    pointer-events: none;
 }
-
-.toast {
-    width: 300px;
-    padding: 12px 14px;
-    border-radius: 3px;
-    border: 1px solid var(--rdr-gold-dim);
-    border-left: 4px solid var(--rdr-gold);
-    background: linear-gradient(160deg, var(--rdr-panel-2), var(--rdr-panel) 60%, var(--rdr-black));
-    box-shadow: 0 16px 40px var(--rdr-shadow);
-    animation: toast-in 0.25s ease;
-}
-.toast.toast-success { border-left-color: var(--rdr-cost-ok); }
-.toast.toast-error   { border-left-color: var(--rdr-red-bright); }
-.toast.toast-info    { border-left-color: var(--rdr-gold); }
-.toast.toast-out { animation: toast-out 0.25s ease forwards; }
-
-.toast-label {
-    margin-bottom: 3px;
-    font-size: 9.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    color: var(--rdr-muted);
-}
-
-.toast-msg {
-    font-size: 12.5px;
-    color: var(--rdr-text);
-}
-
-@keyframes toast-in {
-    from { opacity: 0; transform: translateX(30px); }
-    to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes toast-out {
-    from { opacity: 1; transform: translateX(0); }
-    to   { opacity: 0; transform: translateX(30px); }
-}
+.panel-actions .wood-btn { flex: 1; }

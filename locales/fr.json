@@ -66,5 +66,9 @@
     "cert_issued_date": "Date de Délivrance",
     "cert_close": "Fermer",
     "cert_signed": "Directeur des Études Naturalistes",
-    "cert_footer": "— Registre Officiel de Recherche de Terrain —"
+    "cert_footer": "— Registre Officiel de Recherche de Terrain —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

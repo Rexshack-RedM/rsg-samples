@@ -23,9 +23,14 @@ Config.DebugClient = false   -- Print client-side debug logs to F8 console
 Config.DebugServer = false   -- Print server-side debug logs to server console
 
 --------------------------------------------------------------------------------------------
+-- Database
+--------------------------------------------------------------------------------------------
+Config.AutoInstallDB = true  -- create the player_samples table automatically on resource start
+
+--------------------------------------------------------------------------------------------
 -- Sample Collection
 --------------------------------------------------------------------------------------------
-Config.StoreSampleData   = true   -- false = disable all DB writes (testing only)
+Config.StoreSampleData   = true   -- false = no DB writes; collections kept in memory until restart (testing only)
 Config.SampleHoldTime    = 4000   -- ms — how long to hold the prompt to collect
 Config.AnimalCleanupTime = 90000  -- ms — how long before a sedated animal recovers (90s)
 Config.SampleCooldown    = 3000   -- ms — server-side minimum gap between a player's sample submissions (anti-spam/exploit)
@@ -44,13 +49,13 @@ Config.LeaderboardLocation = {
 --------------------------------------------------------------------------------------------
 -- Map Blip  (shown at the leaderboard target location)
 -- Set Config.ShowBlip = false to hide it entirely.
--- BlipSprite: find a naturalist / animal-tagging sprite that fits. 0 = default circle.
+-- BlipSprite / BlipColor accept RDR3 blip names (joaat'd automatically).
 --------------------------------------------------------------------------------------------
 Config.ShowBlip   = true
-Config.BlipSprite = 0        -- 0 = default generic marker; change to a RDR3 blip hash
-Config.BlipColor  = 2        -- 2 = green
-Config.BlipScale  = 0.8
-Config.BlipLabel  = locale('blip_label')  -- pulled from locales/en.json so it translates with everything else
+Config.BlipSprite = 'blip_shop_trapper'          -- blip sprite name (or hash)
+Config.BlipColor  = 'BLIP_MODIFIER_MP_COLOR_8'   -- blip colour modifier ('' = default)
+Config.BlipScale  = 0.2
+-- Blip label comes from the 'blip_label' locale key
 
 --------------------------------------------------------------------------------------------
 -- Milestone Rewards
@@ -78,5 +83,5 @@ Config.FirstDiscoveryBonus = 500
 -- Admins can change this live with: /setfeatured <animal_name>
 -- Requires: add_ace group.admin rsg-samples.admin allow   in server.cfg
 --------------------------------------------------------------------------------------------
-Config.FeaturedAnimal     = ''  -- e.g. 'bear', 'moose', 'bison' — matches name in hashToAnimalMap
+Config.FeaturedAnimal     = ''  -- e.g. 'bear', 'moose', 'bison' — must match a name in hashToAnimalMap (server/main.lua)
 Config.FeaturedMultiplier = 2   -- reward is multiplied by this when sampling the featured animal

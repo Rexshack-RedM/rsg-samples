@@ -5,15 +5,16 @@ Animal sample collector for RedM (best version) with leaderboard, certificate, a
 ## Features
 
 - Sedate wild animals and hold a prompt to collect their sample
-- 60+ animal species across 6 categories (Predator, Bird, Reptile, Ungulate, Small Game, Exotic)
+- 75 animal species across 6 categories (Predator, Bird, Reptile, Ungulate, Small Game, Exotic)
 - Legendary animal variants with a gold ★ badge and boosted rewards
 - Featured Animal of the day with a cash multiplier (changeable live)
 - First Discovery bonus for the first player to sample an animal server-wide
 - Milestone rewards at 5 / 10 / 25 / 50 samples
 - NUI collector menu (My Samples, Leaderboard, Global Stats tabs)
-- Field Research Certificate overlay with completion stats
+- Field Research Certificate overlay with completion stats (open from the menu header or `/samplecert`)
 - ox_target leaderboard zone + optional map blip
-- ox_lib notify integration
+- ox_lib notify + JSON locales (10 languages)
+- Server-side validation: the server resolves the sampled animal itself and checks model, health and distance before paying out
 
 ## Requirements
 
@@ -27,15 +28,13 @@ Animal sample collector for RedM (best version) with leaderboard, certificate, a
 
 1. Place `rsg-samples` in your `resources/[standalone]` folder
 2. Add `ensure rsg-samples` to your `server.cfg`
-3. Import `install/rsg-samples.sql` into your database (creates the `player_samples` table):
-   - via HeidiSQL / phpMyAdmin, or
-   - run: `mysql -u root -p < install/rsg-samples.sql`
-4. Do not start the resource until the SQL has been imported — it will error on its first DB query otherwise
+3. That's it — the `player_samples` table is created automatically on first start (`Config.AutoInstallDB = true`). Existing installs are left untouched, apart from adding any missing index.
+4. Prefer to manage the schema yourself? Set `Config.AutoInstallDB = false` and import `install/rsg-samples.sql` manually (HeidiSQL / phpMyAdmin, or `mysql -u root -p < install/rsg-samples.sql`) before starting the resource.
 5. Restart the server or `ensure rsg-samples`
 
 ### Where to place the leaderboard
 
-Edit `Config.LeaderboardLocation` in `config.lua` to set the ox_target interaction point (default: Valentine). Note: the SQL ships with an auto-increment seed of `47` — this is harmless and simply continues numbering from that point.
+Edit `Config.LeaderboardLocation` in `shared/config.lua` to set the ox_target interaction point (default: Valentine).
 
 ## Setup SQL
 
@@ -47,8 +46,8 @@ CREATE TABLE IF NOT EXISTS `player_samples` (
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_citizenid_sampleid` (`citizenid`,`sample_id`),
-  KEY `idx_citizenid` (`citizenid`)
-) ENGINE=InnoDB AUTO_INCREMENT=47 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  KEY `idx_sample_id` (`sample_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 ```
 
 ## Commands
@@ -70,15 +69,17 @@ add_ace group.admin rsg-samples.admin allow
 
 ```
 rsg-samples/
-├── config.lua                  # All configuration
+├── shared/
+│   └── config.lua              # All configuration
 ├── client/
-│   ├── main.lua                # NUI handlers, notify, inventory bridge
+│   ├── main.lua                # NUI open/close, revive notify
 │   ├── tagging.lua             # Sedation detection, prompts, sampling threads
 │   ├── target.lua              # ox_target leaderboard zone + map blip
 │   └── taglistener.js          # AI tag event listener (revive data feed)
 ├── server/
-│   ├── main.lua                # Animal map, rewards, leaderboard, commands
-│   └── tagging.lua             # Sample event handler
+│   ├── database.lua            # Auto-creates the player_samples table
+│   ├── main.lua                # Animal map, sample validation, rewards, leaderboard, commands
+│   └── versionchecker.lua      # GitHub version check
 ├── locales/
 │   ├── en.json                 # All translatable strings (ox_lib locale)
 │   ├── de.json, el.json, es.json, fr.json, ja.json,
@@ -98,18 +99,18 @@ rsg-samples/
 |---------|---------|-------------|
 | `Config.DebugClient` | `false` | Print client-side debug logs to F8 |
 | `Config.DebugServer` | `false` | Print server-side debug logs |
-| `Config.StoreSampleData` | `true` | Set `false` to disable all DB writes (testing) |
+| `Config.AutoInstallDB` | `true` | Create the database table automatically on resource start |
+| `Config.StoreSampleData` | `true` | `false` = no DB writes, collections kept in memory until restart (testing) |
 | `Config.SampleHoldTime` | `4000` | Hold time (ms) for the sampling prompt |
+| `Config.SampleCooldown` | `3000` | Server-side minimum gap (ms) between a player's sample submissions |
 | `Config.AnimalCleanupTime` | `90000` | ms before a sedated animal recovers |
 | `Config.LeaderboardLocation` | Valentine | ox_target sphere coords / radius |
 | `Config.ShowBlip` | `true` | Show map blip at the leaderboard location |
-| `Config.BlipSprite` | `0` | RDR3 blip sprite hash (0 = default) |
-| `Config.BlipColor` | `2` | Blip color |
-| `Config.BlipScale` | `0.8` | Blip scale |
-| `Config.BlipLabel` | `'Samples Leaderboard'` | Blip label |
+| `Config.BlipSprite` | `'blip_shop_trapper'` | Blip sprite name or hash |
+| `Config.BlipColor` | `'BLIP_MODIFIER_MP_COLOR_8'` | Blip colour modifier (`''` = default) |
+| `Config.BlipScale` | `0.2` | Blip scale |
 | `Config.MilestoneRewards` | 4 tiers | Bonus cash at 5/10/25/50 samples |
 | `Config.FirstDiscoveryBonus` | `500` | Bonus for first-ever sample of an animal |
-| `Config.LegendaryAnimals` | 5 hashes | Gold ★ legendary badge mapping |
 | `Config.FeaturedAnimal` | `''` | Featured animal name (empty = none) |
 | `Config.FeaturedMultiplier` | `2` | Reward multiplier for the featured animal |
 
@@ -121,12 +122,16 @@ You need a **.22 Rifle** loaded with **Tranquilizer Bullets** to sedate animals.
 
 1. Equip the .22 Rifle with Tranquilizer Bullets and shoot any wild (non-player) animal — the script detects it via the 580 ped flag and network-registers it
 2. A **Take Sample** hold prompt appears on the animal (hold for `Config.SampleHoldTime` ms)
-3. On completion the sample is sent to the server, which:
-   - checks the `player_samples` table for duplicates,
+3. On completion the animal's network id is sent to the server, which:
+   - resolves the entity itself and checks it's a living, known animal within 5m of the player,
+   - rate-limits the player (`Config.SampleCooldown`),
+   - records it atomically (`INSERT IGNORE`) so duplicates can't be paid twice,
    - awards first discovery + milestone bonuses,
    - grants the cash reward (multiplied if the animal is featured)
 4. Open `/samplesmenu` to view your collection, the server-wide leaderboard, and global stats
-5. View `/samplecert` to claim a printable Field Research Certificate
+5. Use `/samplecert` (or the ribbon button in the menu header) to view your Field Research Certificate
+
+Animal names, rewards and categories live in `hashToAnimalMap` at the top of `server/main.lua`. Each animal can only be sampled once per character.
 
 ## Locales
 

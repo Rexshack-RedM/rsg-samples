@@ -4,7 +4,7 @@ game 'rdr3'
 
 author 'Mack'
 description 'rsg-samples'
-version '2.0.0'
+version '2.1.0'
 
 dependencies {
     '/onesync',
@@ -28,8 +28,8 @@ client_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    'server/database.lua',
     'server/main.lua',
-    'server/tagging.lua',
     'server/versionchecker.lua',
 }
 
@@ -39,7 +39,6 @@ files {
     'html/samples.html',
     'html/samples.css',
     'html/samples.js',
-    'install/rsg-samples.sql',
     'locales/*.json',
 }
 

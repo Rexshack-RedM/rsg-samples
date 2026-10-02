@@ -66,5 +66,9 @@
     "cert_issued_date": "Data Eliberării",
     "cert_close": "Închide",
     "cert_signed": "Director de Studii Naturaliste",
-    "cert_footer": "— Registru Oficial de Cercetare de Teren —"
+    "cert_footer": "— Registru Oficial de Cercetare de Teren —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

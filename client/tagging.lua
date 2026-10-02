@@ -1,145 +1,130 @@
-------
-------
-RSG_SampleStore  = {}
-RSG_SampleTimers = {}
-------
-RegisterNetEvent('rsg-samples:Sampled')
-AddEventHandler('rsg-samples:Sampled', function(sampleResult)
-    if Config.DebugClient then
-        print('[rsg-samples] SampleResult:', sampleResult)
+--------------------------------------------------------------------------------------------
+-- RSG SAMPLES — Client: sedation detection + "Take Sample" prompts
+--------------------------------------------------------------------------------------------
+
+local SEDATED_FLAG   = 580
+local PROMPT_CONTROL = 0x956C2A0E
+local PROMPT_RANGE   = 2.0
+
+local tracked = {}   -- [ped] = { prompt = id, sedatedAt = ms }
+local handled = {}   -- [ped] = true once sampled or expired, so we never re-prompt the same ped
+
+local function removePrompt(ped)
+    local entry = tracked[ped]
+    if entry and entry.prompt then
+        PromptDelete(entry.prompt)
     end
-end)
-------
-function RSG_CleanupTranq(animalID)
-    PromptSetVisible(RSG_SampleStore[animalID], false)
-    RSG_SampleTimers[animalID] = nil
+    tracked[ped] = nil
 end
-------
-function RSG_CheckPedIsNet(animalID)
-    repeat
-        NetworkRegisterEntityAsNetworked(animalID)
+
+-- Make sure the ped has a network id the server can resolve (bounded, never blocks forever)
+local function ensureNetworked(ped)
+    for _ = 1, 10 do
+        if NetworkGetEntityIsNetworked(ped) and NetworkDoesNetworkIdExist(NetworkGetNetworkIdFromEntity(ped)) then
+            return true
+        end
+        NetworkRegisterEntityAsNetworked(ped)
         Wait(100)
-    until NetworkDoesNetworkIdExist(NetworkGetNetworkIdFromEntity(animalID))
-    if Config.DebugClient then
-        print(NetworkGetNetworkIdFromEntity(animalID), 'netID Registered for Sampled Ped')
     end
+    return false
 end
-------
-function RSG_StartTranq(animalID)
-    if not UiPromptIsValid(RSG_SampleStore[animalID]) then
-        if Config.DebugClient then
-            print('[rsg-samples] No Prompt exists for Sampled Entity, Creating.')
-        end
-        local animalHash       = GetEntityModel(animalID)
-        local animalpromptgroup = UiPromptGetGroupIdForTargetEntity(animalID)
-        Citizen.CreateThread(function()
-            RSG_SampleTimers[animalID] = GetGameTimer()
-            local promptString = CreateVarString(10, 'LITERAL_STRING', locale('prompt_take_sample'))
-            RSG_SampleStore[animalID] = PromptRegisterBegin()
-            PromptSetControlAction(RSG_SampleStore[animalID], 0x956C2A0E)
-            PromptSetText(RSG_SampleStore[animalID], promptString)
-            PromptSetEnabled(RSG_SampleStore[animalID], true)
-            PromptSetVisible(RSG_SampleStore[animalID], false)
-            PromptSetHoldMode(RSG_SampleStore[animalID], Config.SampleHoldTime)   -- configurable hold time
-            PromptSetGroup(RSG_SampleStore[animalID], animalpromptgroup)
-            PromptRegisterEnd(RSG_SampleStore[animalID])
-            if Config.DebugClient then
-                print('[rsg-samples] Prompt created for entity:', animalID)
-            end
-        end)
+
+local function startTracking(ped)
+    if not ensureNetworked(ped) or not DoesEntityExist(ped) then
+        handled[ped] = true -- the server can't verify a non-networked ped, don't retry every scan
+        return
     end
+
+    local prompt = PromptRegisterBegin()
+    PromptSetControlAction(prompt, PROMPT_CONTROL)
+    PromptSetText(prompt, CreateVarString(10, 'LITERAL_STRING', locale('prompt_take_sample')))
+    PromptSetEnabled(prompt, true)
+    PromptSetVisible(prompt, false)
+    PromptSetHoldMode(prompt, Config.SampleHoldTime)
+    PromptSetGroup(prompt, UiPromptGetGroupIdForTargetEntity(ped))
+    PromptRegisterEnd(prompt)
+
+    tracked[ped] = { prompt = prompt, sedatedAt = GetGameTimer() }
+    if Config.DebugClient then print('[rsg-samples] Prompt created for ped', ped) end
 end
-------
-function RSG_EndTranq(animalID)
-    SetPedConfigFlag(animalID, 580, 0)
-    ClearPedTasks(animalID, 1, 0)
-    ClearPedSecondaryTask(animalID)
-    ClearPedTasksImmediately(animalID)
-    local animalcoords = GetEntityCoords(animalID)
-    TaskFleeCoord(animalID, animalcoords.x + 100, animalcoords.y + 100, animalcoords.z, 2, 0, -1.0, 5000, 0)
-    RSG_CleanupTranq(animalID)
-    if Config.DebugClient then
-        print('[rsg-samples] RSG_EndTranq cleanup for:', animalID)
-    end
+
+local function wakeAnimal(ped)
+    removePrompt(ped)
+    handled[ped] = true
+    if not DoesEntityExist(ped) or IsEntityDead(ped) then return end
+
+    SetPedConfigFlag(ped, SEDATED_FLAG, false)
+    ClearPedTasksImmediately(ped)
+    local c = GetEntityCoords(ped)
+    TaskFleeCoord(ped, c.x + 100.0, c.y + 100.0, c.z, 2, 0, -1.0, 5000, 0)
+    if Config.DebugClient then print('[rsg-samples] Sedation expired for ped', ped) end
 end
-------
--- Thread: detect sedated animals and create/clean sample prompts
-Citizen.CreateThread(function()
+
+--------------------------------------------------------------------------------------------
+-- Scan thread: find newly sedated animals, drop dead / despawned / expired ones
+--------------------------------------------------------------------------------------------
+CreateThread(function()
     while true do
-        local gamePool = GetGamePool('CPed')
-        for _, animal in ipairs(gamePool) do
-            if not IsPedAPlayer(animal) then
-                if DoesEntityExist(animal) then
-                    if IsEntityDead(animal) then
-                        SetPedConfigFlag(animal, 580, 0)
-                        if RSG_SampleStore[animal] ~= nil then
-                            PromptDelete(RSG_SampleStore[animal])
-                            RSG_SampleStore[animal] = nil
-                        end
-                        RSG_CleanupTranq(animal)
-                    else
-                        if GetPedConfigFlag(animal, 580, 1) then
-                            if RSG_SampleTimers[animal] == nil then
-                                RSG_CheckPedIsNet(animal)
-                                RSG_StartTranq(animal)
-                            end
-                        end
-                    end
-                else
-                    RSG_CleanupTranq(animal)
-                end
+        local now = GetGameTimer()
+
+        for _, ped in ipairs(GetGamePool('CPed')) do
+            if not tracked[ped] and not handled[ped]
+                and not IsPedAPlayer(ped) and not IsEntityDead(ped)
+                and GetPedConfigFlag(ped, SEDATED_FLAG, true) then
+                startTracking(ped)
             end
         end
-        Citizen.Wait(1000)
+
+        for ped, entry in pairs(tracked) do
+            if not DoesEntityExist(ped) or IsEntityDead(ped) then
+                removePrompt(ped)
+            elseif now - entry.sedatedAt > Config.AnimalCleanupTime then
+                wakeAnimal(ped)
+            end
+        end
+
+        for ped in pairs(handled) do
+            if not DoesEntityExist(ped) or IsEntityDead(ped) or not GetPedConfigFlag(ped, SEDATED_FLAG, true) then
+                handled[ped] = nil
+            end
+        end
+
+        Wait(1000)
     end
 end)
-------
--- Thread: show prompts in range, fire sampling event, and manage sedation timers
-Citizen.CreateThread(function()
+
+--------------------------------------------------------------------------------------------
+-- Prompt thread: show prompts in range and submit completed samples
+--------------------------------------------------------------------------------------------
+CreateThread(function()
     while true do
-        for animalID, animalPrompt in pairs(RSG_SampleStore) do
-            local playerCoords = GetEntityCoords(PlayerPedId())
-            local animalcoords = GetEntityCoords(animalID)
-            local dist = Vdist(animalcoords.x, animalcoords.y, animalcoords.z,
-                               playerCoords.x, playerCoords.y, playerCoords.z)
+        if next(tracked) == nil then
+            Wait(500)
+        else
+            local playerCoords = GetEntityCoords(cache.ped)
 
-            if dist < 2.0 then
-                PromptSetVisible(RSG_SampleStore[animalID], true)
-            else
-                PromptSetVisible(RSG_SampleStore[animalID], false)
-            end
+            for ped, entry in pairs(tracked) do
+                if DoesEntityExist(ped) then
+                    local inRange = #(GetEntityCoords(ped) - playerCoords) < PROMPT_RANGE
+                    PromptSetVisible(entry.prompt, inRange)
 
-            local completedP = UiPromptHasHoldModeCompleted(animalPrompt)
-            if completedP then
-                local animalHash = GetEntityModel(animalID)
-                -- Remove from store IMMEDIATELY before yielding to next frame.
-                -- Prevents the Wait(0) loop from firing TriggerServerEvent a
-                -- second time while UiPromptSetEnabled hasn't taken effect yet.
-                RSG_SampleStore[animalID]  = nil
-                RSG_SampleTimers[animalID] = nil
-                UiPromptSetEnabled(animalPrompt, 0)
-                UiPromptSetVisible(animalPrompt, 0)
-                PromptDelete(animalPrompt)
-                SetPedQuality(animalID, -1)
-                TriggerServerEvent('rsg-samples:SampleData', animalHash)
-                if Config.DebugClient then
-                    print('[rsg-samples] Sampling complete, hash:', animalHash)
+                    if inRange and PromptHasHoldModeCompleted(entry.prompt) then
+                        -- Remove first so the next frame can't submit twice
+                        removePrompt(ped)
+                        handled[ped] = true
+                        SetPedQuality(ped, -1)
+                        TriggerServerEvent('rsg-samples:server:sampleAnimal', NetworkGetNetworkIdFromEntity(ped))
+                        if Config.DebugClient then print('[rsg-samples] Sample submitted for ped', ped) end
+                    end
                 end
             end
-        end
 
-        -- Sedation timer — uses Config.AnimalCleanupTime
-        local now = GetGameTimer()
-        for animalID, animalSedatedAt in pairs(RSG_SampleTimers) do
-            local timediff = now - animalSedatedAt
-            if timediff > Config.AnimalCleanupTime then
-                if Config.DebugClient then
-                    print('[rsg-samples] Sedation expired for:', animalID, 'after', timediff, 'ms')
-                end
-                RSG_EndTranq(animalID)
-            end
+            Wait(0)
         end
-
-        Citizen.Wait(0)
     end
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= GetCurrentResourceName() then return end
+    for ped in pairs(tracked) do removePrompt(ped) end
 end)

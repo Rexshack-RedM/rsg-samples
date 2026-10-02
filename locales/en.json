@@ -9,22 +9,17 @@
     "featured_cleared": "Featured animal cleared",
     "no_permission": "You do not have permission to use this command",
     "prompt_take_sample": "Take Sample",
-
     "cmd_samplesmenu": "Open the Samples Collector Menu",
     "cmd_samplecert": "View your Field Research Certificate",
     "cmd_setfeatured": "Set the featured animal of the day (admin)",
-
     "target_leaderboard": "View Samples Leaderboard",
-
     "blip_label": "Samples Leaderboard",
-
     "ui_title": "Sample Collector",
     "ui_subtitle": "Naturalist Research Log",
     "ui_tab_samples": "My Samples",
     "ui_tab_leaderboard": "Leaderboard",
     "ui_tab_stats": "Global Stats",
     "ui_close": "Close",
-
     "ui_field_guide": "Field Guide",
     "ui_search_guide": "Search Guide",
     "ui_progress_label": "Progress",
@@ -36,7 +31,6 @@
     "ui_collected_on": "Collected",
     "ui_legendary": "★ LEGENDARY",
     "ui_featured": "⭐ FEATURED",
-
     "cat_all": "All",
     "cat_predator": "Predators",
     "cat_bird": "Birds",
@@ -44,14 +38,12 @@
     "cat_ungulate": "Ungulates",
     "cat_small_game": "Small Game",
     "cat_exotic": "Exotic",
-
     "ui_find_collector": "Find Collector",
     "ui_top_collectors": "Top Sample Collectors",
     "ui_search_collectors": "Search collectors...",
     "ui_no_collectors": "No collectors yet",
     "ui_samples_count": "samples",
     "ui_rank_prefix": "#",
-
     "ui_global_stats": "Server Statistics",
     "ui_total_all": "Total Samples Collected (All Time)",
     "ui_rarest_animal": "Rarest Animal",
@@ -63,7 +55,6 @@
     "ui_featured_now": "Featured Animal",
     "ui_featured_mult": "x%s reward multiplier active",
     "ui_no_featured": "No featured animal set",
-
     "cert_title": "FIELD RESEARCH CERTIFICATE",
     "cert_subtitle": "Official Field Research Record",
     "cert_back": "Back to Field Guide",
@@ -75,5 +66,9 @@
     "cert_issued_date": "Date of Issue",
     "cert_close": "Close",
     "cert_signed": "Director of Naturalist Studies",
-    "cert_footer": "— Official Field Research Record —"
+    "cert_footer": "— Official Field Research Record —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

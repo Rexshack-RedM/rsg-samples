@@ -66,5 +66,9 @@
     "cert_issued_date": "Data Wystawienia",
     "cert_close": "Zamknij",
     "cert_signed": "Dyrektor Studiów Przyrodniczych",
-    "cert_footer": "— Oficjalny Rejestr Badań Terenowych —"
+    "cert_footer": "— Oficjalny Rejestr Badań Terenowych —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

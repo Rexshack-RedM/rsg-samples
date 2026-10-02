@@ -66,5 +66,9 @@
     "cert_issued_date": "Ausstellungsdatum",
     "cert_close": "Schließen",
     "cert_signed": "Direktor für Naturforschung",
-    "cert_footer": "— Offizielles Feldforschungsprotokoll —"
+    "cert_footer": "— Offizielles Feldforschungsprotokoll —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

@@ -1,27 +1,30 @@
 // ============================================================
 // RSG SAMPLES — NUI Script
-// Edit freely — no escrow on this file.
 // ============================================================
+
+const PAGE_SIZE = 10;
+const CAT_ORDER = ['All', 'Predator', 'Bird', 'Reptile', 'Ungulate', 'Small Game', 'Exotic'];
 
 // ============================================================
 // State
 // ============================================================
-let lang              = {};
-let allSamples        = {};
-let collectedSamples  = {};
-let topCollectors     = [];
-let globalStats       = {};
-let currentCitizenId  = null;
-let playerName        = '';
-let featuredAnimal    = '';
+let lang               = {};
+let samples            = [];   // [{ name, reward, category, legendary }] sorted
+let collectedSamples   = {};
+let topCollectors      = [];
+let globalStats        = {};
+let currentCitizenId   = null;
+let playerName         = '';
+let featuredAnimal     = '';
 let featuredMultiplier = 2;
 
-let filteredSamples   = [];
-let displayedCount    = 10;
-let totalSamples      = 0;
+let filteredSamples      = [];
+let displayedCount       = PAGE_SIZE;
 let collectedSampleCount = 0;
-let totalRewards      = 0;
-let activeCategory    = 'All';
+let totalRewards         = 0;
+let activeCategory       = 'All';
+
+const $ = id => document.getElementById(id);
 
 // ============================================================
 // Utilities
@@ -30,63 +33,17 @@ function post(endpoint, data) {
     return fetch(`https://${GetParentResourceName()}/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-    }).catch(err => console.error('[rsg-samples] post error:', err));
+        body: JSON.stringify(data || {})
+    }).catch(() => {});
 }
 
-function esc(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
-// ============================================================
-// Window / menu helpers
-// ============================================================
-function showMenu(id) {
-    hideAllMenus();
-    const el = document.getElementById(id);
-    if (el) {
-        el.classList.remove('hidden');
-        el.classList.add('active');
-        document.body.classList.add('menus-active');
-    }
-}
-
-function hideAllMenus() {
-    const anyOpen = document.querySelectorAll('.panel-root.active').length > 0;
-    document.querySelectorAll('.panel-root').forEach(m => {
-        m.classList.add('hidden');
-        m.classList.remove('active');
-    });
-    if (anyOpen) document.body.classList.remove('menus-active');
-}
-
-function backToMenu() {
-    showMenu('samplesMenuUI');
-}
-
-function showToast(type, title, message) {
-    const stack = document.getElementById('toastStack');
-    if (!stack) return;
-    const el = document.createElement('div');
-    el.className = 'toast ' + (type === 'success' ? 'toast-success' : type === 'error' ? 'toast-error' : 'toast-info');
-    el.innerHTML = '<div class="toast-label">' + esc(title) + '</div><div class="toast-msg">' + esc(message) + '</div>';
-    stack.appendChild(el);
-    setTimeout(() => el.classList.add('toast-out'), 3000);
-    setTimeout(() => el.remove(), 3300);
+function t(key, fallback) {
+    return lang[key] || fallback;
 }
 
 function setText(id, text) {
-    const el = document.getElementById(id);
+    const el = $(id);
     if (el) el.textContent = text;
-}
-
-function setPlaceholder(id, text) {
-    const el = document.getElementById(id);
-    if (el) el.placeholder = text;
 }
 
 function formatAnimalName(name) {
@@ -96,511 +53,350 @@ function formatAnimalName(name) {
         .join(' ');
 }
 
-function formatDate(dateStr) {
-    if (!dateStr) return '';
-    try {
-        const d = new Date(dateStr);
-        return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-    } catch (e) {
-        return String(dateStr);
-    }
+function formatDate(value, opts) {
+    if (!value) return '';
+    // oxmysql returns timestamps as epoch milliseconds
+    const d = new Date(typeof value === 'number' ? value : String(value));
+    if (isNaN(d)) return String(value);
+    return d.toLocaleDateString(undefined, opts || { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function el(tag, className, text) {
+    const e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+}
+
+function emptyState(container, text) {
+    container.appendChild(el('p', 'empty-state', text));
 }
 
 // ============================================================
-// State setup  (shared by openSamplesMenu and openCertificate)
+// Menu visibility
+// ============================================================
+function showMenu(id) {
+    document.querySelectorAll('.panel-root').forEach(m => {
+        const show = m.id === id;
+        m.classList.toggle('hidden', !show);
+        m.classList.toggle('active', show);
+    });
+}
+
+function closeUI() {
+    document.querySelectorAll('.panel-root').forEach(m => {
+        m.classList.add('hidden');
+        m.classList.remove('active');
+    });
+    post('closeUI');
+}
+
+// ============================================================
+// State setup
 // ============================================================
 function setupState(data) {
-    lang               = data.lang             || {};
-    allSamples         = data.allSamples        || {};
+    lang               = data.lang              || {};
     collectedSamples   = data.collectedSamples  || {};
     topCollectors      = data.topCollectors     || [];
     globalStats        = data.globalStats       || {};
     currentCitizenId   = data.currentCitizenId  || null;
     playerName         = data.playerName        || 'Unknown';
-    featuredAnimal     = data.featuredAnimal     || '';
+    featuredAnimal     = data.featuredAnimal    || '';
     featuredMultiplier = data.featuredMultiplier || 2;
 
-    // Recalculate totals
-    totalSamples         = Object.keys(allSamples).length;
-    collectedSampleCount = Object.keys(collectedSamples).length;
-    totalRewards = Object.entries(collectedSamples).reduce((sum, [name]) => {
-        const s = Object.values(allSamples).find(x => x.name === name);
-        return sum + (s ? (s.reward || 0) : 0);
-    }, 0);
+    samples = Object.values(data.allSamples || {}).map(d => ({
+        name:      d.name      || 'unknown',
+        reward:    d.reward    || 0,
+        category:  d.category  || 'Exotic',
+        legendary: !!d.legendary,
+    })).sort((a, b) => a.name.localeCompare(b.name));
+
+    collectedSampleCount = 0;
+    totalRewards = 0;
+    samples.forEach(s => {
+        if (collectedSamples[s.name]) {
+            collectedSampleCount++;
+            totalRewards += s.reward;
+        }
+    });
+
+    activeCategory = 'All';
+    $('searchSamplesInput').value = '';
+    $('searchCollectorsInput').value = '';
+    applyLang();
+    buildCategoryTabs();
+    applyFilter('');
+    switchTab('Samples');
 }
 
 // ============================================================
-// Tab switching
+// Tabs
 // ============================================================
 function switchTab(tabName) {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.id === 'tabBtn' + tabName));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === 'tab' + tabName));
 
-    const btn = document.getElementById('tabBtn' + tabName);
-    const pane = document.getElementById('tab' + tabName);
-    if (btn)  btn.classList.add('active');
-    if (pane) pane.classList.add('active');
-
-    if (tabName === 'Leaderboard') renderLeaderboard(topCollectors);
+    if (tabName === 'Leaderboard') filterCollectors($('searchCollectorsInput').value);
     if (tabName === 'Stats')       renderGlobalStats();
 }
 
-// ============================================================
-// Category tabs
-// ============================================================
+function translateCat(cat) {
+    const map = {
+        'All':        t('cat_all', 'All'),
+        'Predator':   t('cat_predator', 'Predators'),
+        'Bird':       t('cat_bird', 'Birds'),
+        'Reptile':    t('cat_reptile', 'Reptiles'),
+        'Ungulate':   t('cat_ungulate', 'Ungulates'),
+        'Small Game': t('cat_small_game', 'Small Game'),
+        'Exotic':     t('cat_exotic', 'Exotic'),
+    };
+    return map[cat] || cat;
+}
+
 function buildCategoryTabs() {
-    const cats = ['All'];
-    Object.values(allSamples).forEach(d => {
-        const cat = d.category || 'Exotic';
-        if (!cats.includes(cat)) cats.push(cat);
-    });
+    const cats = ['All', ...new Set(samples.map(s => s.category))];
+    const rank = c => { const i = CAT_ORDER.indexOf(c); return i === -1 ? 99 : i; };
+    cats.sort((a, b) => rank(a) - rank(b));
 
-    const catOrder = ['All', 'Predator', 'Bird', 'Reptile', 'Ungulate', 'Small Game', 'Exotic'];
-    cats.sort((a, b) => {
-        const ia = catOrder.indexOf(a), ib = catOrder.indexOf(b);
-        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-    });
-
-    const container = document.getElementById('categoryTabs');
+    const container = $('categoryTabs');
     container.innerHTML = '';
-
     cats.forEach(cat => {
-        const btn = document.createElement('button');
-        btn.className = 'cat-btn' + (cat === activeCategory ? ' active' : '');
-        btn.textContent = translateCat(cat);
+        const btn = el('button', 'cat-btn' + (cat === activeCategory ? ' active' : ''), translateCat(cat));
         btn.addEventListener('click', () => {
             activeCategory = cat;
-            document.querySelectorAll('#categoryTabs .cat-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            applyFilter(document.getElementById('searchSamplesInput').value);
+            container.querySelectorAll('.cat-btn').forEach(b => b.classList.toggle('active', b === btn));
+            applyFilter($('searchSamplesInput').value);
         });
         container.appendChild(btn);
     });
 }
 
-function translateCat(cat) {
-    const map = {
-        'All':        lang.cat_all        || 'All',
-        'Predator':   lang.cat_predator   || 'Predators',
-        'Bird':       lang.cat_bird       || 'Birds',
-        'Reptile':    lang.cat_reptile    || 'Reptiles',
-        'Ungulate':   lang.cat_ungulate   || 'Ungulates',
-        'Small Game': lang.cat_small_game || 'Small Game',
-        'Exotic':     lang.cat_exotic     || 'Exotic',
-    };
-    return map[cat] || cat;
-}
-
 // ============================================================
-// Sample list rendering
+// Samples list
 // ============================================================
 function applyFilter(searchTerm) {
-    const all = Object.entries(allSamples).map(([hash, d]) => ({
-        hash,
-        name:      d.name      || 'unknown',
-        reward:    d.reward    || 0,
-        category:  d.category  || 'Exotic',
-        legendary: d.legendary || false,
-    }));
-
-    filteredSamples = all.filter(s => {
-        const matchCat = (activeCategory === 'All' || activeCategory === (lang.cat_all || 'All'))
-                         || s.category === activeCategory;
-        const matchSearch = !searchTerm
-                            || s.name.toLowerCase().includes(searchTerm.toLowerCase());
-        return matchCat && matchSearch;
-    });
-
-    displayedCount = 10;
+    const term = (searchTerm || '').trim().toLowerCase().replace(/\s+/g, '_');
+    filteredSamples = samples.filter(s =>
+        (activeCategory === 'All' || s.category === activeCategory) &&
+        (!term || s.name.includes(term))
+    );
+    displayedCount = PAGE_SIZE;
     renderSamples();
 }
 
-function renderSamples() {
-    const list = document.getElementById('samplesList');
-    list.innerHTML = '';
+function renderProgress() {
+    const total = samples.length;
+    const pct = total > 0 ? (collectedSampleCount / total * 100) : 0;
+    $('progressFill').style.width = pct.toFixed(1) + '%';
+    setText('progressText', t('ui_progress_label', 'Progress') + ': ' + pct.toFixed(1) + '%');
+    setText('progressInner', collectedSampleCount + ' / ' + total);
+    setText('totalRewards', t('ui_total_rewards', 'Total Rewards') + ': $' + totalRewards);
+}
 
-    // Update progress
-    const pct = totalSamples > 0 ? (collectedSampleCount / totalSamples * 100) : 0;
-    document.getElementById('progressFill').style.width = pct.toFixed(1) + '%';
-    setText('progressText',
-        (lang.ui_progress_label || 'Progress') + ': ' + pct.toFixed(1) + '%');
-    setText('progressInner', collectedSampleCount + ' / ' + totalSamples);
-    setText('totalRewards',
-        (lang.ui_total_rewards || 'Total Rewards') + ': $' + totalRewards);
+function renderSamples() {
+    renderProgress();
+
+    const list = $('samplesList');
+    const loadMore = $('loadMoreButton');
+    list.innerHTML = '';
+    loadMore.textContent = t('ui_load_more', 'Load More');
 
     if (!filteredSamples.length) {
-        const p = document.createElement('p');
-        p.className = 'empty-state';
-        p.textContent = lang.ui_no_samples || 'No samples available';
-        list.appendChild(p);
-        document.getElementById('loadMoreButton').disabled = true;
+        emptyState(list, t('ui_no_samples', 'No samples available'));
+        loadMore.classList.add('hidden');
         return;
     }
 
-    const slice = filteredSamples.slice(0, displayedCount);
-    slice.forEach(sample => {
-        const isCollected = !!collectedSamples[sample.name];
-        const isLegendary = sample.legendary;
-        const isFeatured  = (sample.name === featuredAnimal && featuredAnimal !== '');
-        const displayReward = isFeatured
-            ? (sample.reward * featuredMultiplier)
-            : sample.reward;
+    const frag = document.createDocumentFragment();
+    filteredSamples.slice(0, displayedCount).forEach(sample => {
+        const entry       = collectedSamples[sample.name];
+        const isFeatured  = featuredAnimal !== '' && sample.name === featuredAnimal;
+        const reward      = isFeatured ? sample.reward * featuredMultiplier : sample.reward;
 
-        const div = document.createElement('div');
-        div.className = 'sample-item'
-            + (isCollected ? ' collected' : '')
-            + (isLegendary ? ' legendary' : '');
+        const row = el('div', 'sample-item' + (entry ? ' collected' : '') + (sample.legendary ? ' legendary' : ''));
+        row.appendChild(el('span', 'sample-check', entry ? '✔' : ''));
 
-        // Checkmark
-        const check = document.createElement('span');
-        check.className = 'sample-check';
-        check.textContent = isCollected ? '✔' : '';
-        div.appendChild(check);
-
-        // Info block
-        const info = document.createElement('div');
-        info.className = 'sample-info';
-
-        // Name row with badges
-        const nameRow = document.createElement('div');
-        nameRow.className = 'sample-name';
-        nameRow.appendChild(document.createTextNode(formatAnimalName(sample.name)));
-
-        if (isLegendary) {
-            const b = document.createElement('span');
-            b.className = 'badge-legendary';
-            b.textContent = lang.ui_legendary || '★ LEGENDARY';
-            nameRow.appendChild(b);
-        }
-        if (isFeatured) {
-            const b = document.createElement('span');
-            b.className = 'badge-featured';
-            b.textContent = lang.ui_featured || '⭐ FEATURED';
-            nameRow.appendChild(b);
-        }
+        const info = el('div', 'sample-info');
+        const nameRow = el('div', 'sample-name', formatAnimalName(sample.name));
+        if (sample.legendary) nameRow.appendChild(el('span', 'badge-legendary', t('ui_legendary', '★ LEGENDARY')));
+        if (isFeatured)       nameRow.appendChild(el('span', 'badge-featured', t('ui_featured', '⭐ FEATURED')));
         info.appendChild(nameRow);
 
-        // Details row
-        const details = document.createElement('div');
-        details.className = 'sample-details';
-
-        const rewardSpan = document.createElement('span');
-        rewardSpan.className = 'reward-text';
-        rewardSpan.textContent = (lang.ui_reward || 'Reward') + ': $' + displayReward
-            + (isFeatured ? ' (x' + featuredMultiplier + ')' : '');
-        details.appendChild(rewardSpan);
-
-        if (isCollected) {
-            const entry = collectedSamples[sample.name];
-            if (entry && entry.created_at) {
-                const dateSpan = document.createElement('span');
-                dateSpan.className = 'collected-date';
-                dateSpan.textContent = (lang.ui_collected_on || 'Collected') + ': ' + formatDate(entry.created_at);
-                details.appendChild(dateSpan);
-            }
+        const details = el('div', 'sample-details');
+        details.appendChild(el('span', 'reward-text',
+            t('ui_reward', 'Reward') + ': $' + reward + (isFeatured ? ' (x' + featuredMultiplier + ')' : '')));
+        if (entry && entry.created_at) {
+            details.appendChild(el('span', 'collected-date',
+                t('ui_collected_on', 'Collected') + ': ' + formatDate(entry.created_at)));
         }
         info.appendChild(details);
-        div.appendChild(info);
-        list.appendChild(div);
+        row.appendChild(info);
+        frag.appendChild(row);
     });
+    list.appendChild(frag);
 
-    const btn = document.getElementById('loadMoreButton');
-    btn.disabled  = displayedCount >= filteredSamples.length;
-    btn.textContent = lang.ui_load_more || 'Load More';
+    loadMore.classList.toggle('hidden', displayedCount >= filteredSamples.length);
 }
 
 // ============================================================
-// Leaderboard rendering
+// Leaderboard
 // ============================================================
 function renderLeaderboard(collectors) {
-    const list = document.getElementById('rankedList');
+    const list = $('rankedList');
     list.innerHTML = '';
 
-    if (!collectors || collectors.length === 0) {
-        const p = document.createElement('p');
-        p.className = 'empty-state';
-        p.textContent = lang.ui_no_collectors || 'No collectors yet';
-        list.appendChild(p);
+    if (!collectors.length) {
+        emptyState(list, t('ui_no_collectors', 'No collectors yet'));
         return;
     }
 
     collectors.forEach(c => {
-        const div = document.createElement('div');
-        div.className = 'collector-item'
-            + (c.citizenid === currentCitizenId ? ' current-player' : '');
-
-        const rankClass = c.rank === 1 ? ' gold' : c.rank === 2 ? ' silver' : c.rank === 3 ? ' bronze' : '';
-        const rank = document.createElement('span');
-        rank.className = 'collector-rank' + rankClass;
-        rank.textContent = (lang.ui_rank_prefix || '#') + c.rank;
-        div.appendChild(rank);
-
-        const name = document.createElement('span');
-        name.className = 'collector-name';
-        name.textContent = c.name;
-        div.appendChild(name);
-
-        const count = document.createElement('span');
-        count.className = 'collector-count';
-        count.textContent = c.sample_count + ' ' + (lang.ui_samples_count || 'samples');
-        div.appendChild(count);
-
-        list.appendChild(div);
+        const row = el('div', 'collector-item' + (c.citizenid === currentCitizenId ? ' current-player' : ''));
+        const medal = c.rank === 1 ? ' gold' : c.rank === 2 ? ' silver' : c.rank === 3 ? ' bronze' : '';
+        row.appendChild(el('span', 'collector-rank' + medal, t('ui_rank_prefix', '#') + c.rank));
+        row.appendChild(el('span', 'collector-name', c.name || 'Unknown'));
+        row.appendChild(el('span', 'collector-count', c.sample_count + ' ' + t('ui_samples_count', 'samples')));
+        list.appendChild(row);
     });
 }
 
 function filterCollectors(searchTerm) {
-    if (!searchTerm) {
-        renderLeaderboard(topCollectors);
-        return;
-    }
-    renderLeaderboard(
-        topCollectors.filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    const term = (searchTerm || '').trim().toLowerCase();
+    renderLeaderboard(term
+        ? topCollectors.filter(c => String(c.name || '').toLowerCase().includes(term))
+        : topCollectors);
 }
 
 // ============================================================
-// Global Stats rendering
+// Global stats
 // ============================================================
 function renderGlobalStats() {
-    const container = document.getElementById('globalStatsList');
+    const container = $('globalStatsList');
     container.innerHTML = '';
-
     const stats = globalStats || {};
 
-    // Helper to add a card
     function addCard(titleKey, value, subText, extraClass) {
-        const card = document.createElement('div');
-        card.className = 'stat-card';
-
-        const title = document.createElement('div');
-        title.className = 'stat-card-title';
-        title.textContent = lang[titleKey] || titleKey;
-        card.appendChild(title);
-
-        const val = document.createElement('div');
-        val.className = 'stat-card-value' + (extraClass ? ' ' + extraClass : '');
-        val.textContent = value;
-        card.appendChild(val);
-
-        if (subText) {
-            const sub = document.createElement('div');
-            sub.className = 'stat-card-sub';
-            sub.textContent = subText;
-            card.appendChild(sub);
-        }
+        const card = el('div', 'stat-card');
+        card.appendChild(el('div', 'stat-card-title', t(titleKey, titleKey)));
+        card.appendChild(el('div', 'stat-card-value' + (extraClass ? ' ' + extraClass : ''), value));
+        if (subText) card.appendChild(el('div', 'stat-card-sub', subText));
         container.appendChild(card);
     }
 
-    // Total collected
-    addCard('ui_total_all', stats.totalCollected || 0, null);
+    addCard('ui_total_all', stats.totalCollected || 0);
 
-    // Rarest animal
-    const rareName  = stats.rarestAnimal
-        ? formatAnimalName(stats.rarestAnimal)
-        : (lang.ui_no_stats || 'No data yet');
-    const rareSub   = stats.rarestAnimal
-        ? (lang.ui_rarest_sub || 'only %s collector(s) server-wide').replace('%s', stats.rarestCount || 0)
-        : null;
-    addCard('ui_rarest_animal', rareName, rareSub);
+    addCard('ui_rarest_animal',
+        stats.rarestAnimal ? formatAnimalName(stats.rarestAnimal) : t('ui_no_stats', 'No data yet'),
+        stats.rarestAnimal ? t('ui_rarest_sub', 'only %s collector(s) server-wide').replace('%s', stats.rarestCount || 0) : null);
 
-    // Weekly top collector
-    const weekName  = stats.weeklyTopName || (lang.ui_no_weekly || 'No activity recorded this week');
-    const weekSub   = stats.weeklyTopName
-        ? (lang.ui_weekly_sub || '%s samples collected this week').replace('%s', stats.weeklyTopCount || 0)
-        : null;
-    addCard('ui_weekly_top', weekName, weekSub);
+    addCard('ui_weekly_top',
+        stats.weeklyTopName || t('ui_no_weekly', 'No activity recorded this week'),
+        stats.weeklyTopName ? t('ui_weekly_sub', '%s samples collected this week').replace('%s', stats.weeklyTopCount || 0) : null);
 
-    // Featured animal
-    const featName  = (stats.featuredAnimal && stats.featuredAnimal !== '')
-        ? formatAnimalName(stats.featuredAnimal)
-        : (lang.ui_no_featured || 'No featured animal set');
-    const featSub   = (stats.featuredAnimal && stats.featuredAnimal !== '')
-        ? (lang.ui_featured_mult || 'x%s reward multiplier active').replace('%s', stats.featuredMult || 2)
-        : null;
-    addCard('ui_featured_now', featName, featSub,
-            (stats.featuredAnimal && stats.featuredAnimal !== '') ? 'featured-val' : '');
+    const hasFeatured = !!featuredAnimal;
+    addCard('ui_featured_now',
+        hasFeatured ? formatAnimalName(featuredAnimal) : t('ui_no_featured', 'No featured animal set'),
+        hasFeatured ? t('ui_featured_mult', 'x%s reward multiplier active').replace('%s', featuredMultiplier) : null,
+        hasFeatured ? 'featured-val' : '');
 }
 
 // ============================================================
 // Certificate
 // ============================================================
 function showCertificate() {
-    const content = document.getElementById('certContent');
+    const content = $('certContent');
     content.innerHTML = '';
 
-    setText('certTitleHeader', lang.cert_title || 'FIELD RESEARCH CERTIFICATE');
-
-    const now = new Date().toLocaleDateString('en-US', {
-        year: 'numeric', month: 'long', day: 'numeric'
-    });
-    const pct = totalSamples > 0
-        ? (collectedSampleCount / totalSamples * 100).toFixed(1)
-        : '0.0';
-
-    const legendaryCount = Object.values(allSamples).filter(d =>
-        d.legendary && collectedSamples[d.name]
-    ).length;
+    const total = samples.length;
+    const pct = total > 0 ? (collectedSampleCount / total * 100).toFixed(1) : '0.0';
+    const legendaryCount = samples.filter(s => s.legendary && collectedSamples[s.name]).length;
 
     function addField(labelKey, value, large) {
-        const div = document.createElement('div');
-        div.className = 'cert-field';
-
-        const lbl = document.createElement('div');
-        lbl.className = 'cert-field-label';
-        lbl.textContent = lang[labelKey] || labelKey;
-        div.appendChild(lbl);
-
-        const val = document.createElement('div');
-        val.className = 'cert-field-value' + (large ? ' large' : '');
-        val.textContent = String(value);
-        div.appendChild(val);
-
-        content.appendChild(div);
+        const field = el('div', 'cert-field');
+        field.appendChild(el('div', 'cert-field-label', t(labelKey, labelKey)));
+        field.appendChild(el('div', 'cert-field-value' + (large ? ' large' : ''), String(value)));
+        content.appendChild(field);
     }
 
-    addField('cert_issued_to',       playerName,          true);
-    addField('cert_completion',       pct + '%',           true);
-    addField('cert_total_rewards',    '$' + totalRewards,  false);
-    addField('cert_legendary_count',  legendaryCount,      false);
+    addField('cert_issued_to',       playerName, true);
+    addField('cert_completion',      pct + '%', true);
+    addField('cert_total_rewards',   '$' + totalRewards);
+    addField('cert_legendary_count', legendaryCount);
+    if (featuredAnimal) addField('cert_featured_animal', formatAnimalName(featuredAnimal));
+    addField('cert_issued_date', formatDate(Date.now(), { year: 'numeric', month: 'long', day: 'numeric' }));
 
-    if (featuredAnimal && featuredAnimal !== '') {
-        addField('cert_featured_animal', formatAnimalName(featuredAnimal), false);
-    }
+    content.appendChild(el('div', 'cert-signature', t('cert_signed', 'Director of Naturalist Studies')));
+    content.appendChild(el('div', 'cert-seal', t('cert_footer', '— Official Field Research Record —')));
 
-    addField('cert_issued_date', now, false);
-
-    const sig = document.createElement('div');
-    sig.className = 'cert-signature';
-    sig.textContent = lang.cert_signed || 'Director of Naturalist Studies';
-    content.appendChild(sig);
-
-    const seal = document.createElement('div');
-    seal.className = 'cert-seal';
-    seal.textContent = lang.cert_footer || '— Official Field Research Record —';
-    content.appendChild(seal);
-
-    document.getElementById('certOverlay') && showMenu('certOverlay');
-}
-
-function closeCertificate() {
-    hideAllMenus();
-    post('closeUI', {});
+    showMenu('certOverlay');
 }
 
 // ============================================================
-// Close main UI
-// ============================================================
-function closeUI() {
-    hideAllMenus();
-    post('closeUI', {});
-}
-
-// ============================================================
-// Apply locale to static DOM labels
+// Static labels
 // ============================================================
 function applyLang() {
-    setText('menuTitle',         lang.ui_title             || 'Sample Collector');
-    setText('menuSubtitle',      lang.ui_subtitle          || 'Naturalist Research Log');
-    setText('leaderboardTitle',  lang.ui_top_collectors    || 'Top Sample Collectors');
-    setText('statsHeading',      lang.ui_global_stats      || 'Server Statistics');
-    setText('fieldGuideLabel',   lang.ui_field_guide       || 'Field Guide');
-    setText('searchGuideLabel',  lang.ui_search_guide      || 'Search Guide');
-    setText('findCollectorLabel', lang.ui_find_collector   || 'Find Collector');
-    setText('certSubtitle',      lang.cert_subtitle        || 'Official Field Research Record');
+    setText('menuTitle',          t('ui_title', 'Sample Collector'));
+    setText('menuSubtitle',       t('ui_subtitle', 'Naturalist Research Log'));
+    setText('leaderboardTitle',   t('ui_top_collectors', 'Top Sample Collectors'));
+    setText('statsHeading',       t('ui_global_stats', 'Server Statistics'));
+    setText('fieldGuideLabel',    t('ui_field_guide', 'Field Guide'));
+    setText('searchGuideLabel',   t('ui_search_guide', 'Search Guide'));
+    setText('findCollectorLabel', t('ui_find_collector', 'Find Collector'));
+    setText('certTitleHeader',    t('cert_title', 'Field Research Certificate'));
+    setText('certSubtitle',       t('cert_subtitle', 'Official Field Research Record'));
+    setText('tabBtnSamples',      t('ui_tab_samples', 'My Samples'));
+    setText('tabBtnLeaderboard',  t('ui_tab_leaderboard', 'Leaderboard'));
+    setText('tabBtnStats',        t('ui_tab_stats', 'Global Stats'));
 
-    if (document.getElementById('closeButton'))       document.getElementById('closeButton').title       = lang.ui_close || 'Close';
-    if (document.getElementById('menuBackButton'))    document.getElementById('menuBackButton').title     = lang.ui_close || 'Close';
-    if (document.getElementById('certCloseButton'))   document.getElementById('certCloseButton').title   = lang.cert_close || 'Close';
-    if (document.getElementById('certBackButton'))    document.getElementById('certBackButton').title    = lang.cert_back || 'Back to Field Guide';
+    $('closeButton').title     = t('ui_close', 'Close');
+    $('certOpenButton').title  = t('ui_view_cert', 'View Certificate');
+    $('certCloseButton').title = t('cert_close', 'Close');
+    $('certBackButton').title  = t('cert_back', 'Back to Field Guide');
 
-    document.getElementById('tabBtnSamples').textContent     = lang.ui_tab_samples    || 'My Samples';
-    document.getElementById('tabBtnLeaderboard').textContent = lang.ui_tab_leaderboard || 'Leaderboard';
-    document.getElementById('tabBtnStats').textContent       = lang.ui_tab_stats      || 'Global Stats';
-
-    setPlaceholder('searchSamplesInput',    lang.ui_search_samples    || 'Search animals...');
-    setPlaceholder('searchCollectorsInput', lang.ui_search_collectors || 'Search collectors...');
+    $('searchSamplesInput').placeholder    = t('ui_search_samples', 'Search animals...');
+    $('searchCollectorsInput').placeholder = t('ui_search_collectors', 'Search collectors...');
 }
 
 // ============================================================
-// DOMContentLoaded — wire up events
+// Wiring
 // ============================================================
-document.addEventListener('DOMContentLoaded', function () {
+document.addEventListener('DOMContentLoaded', () => {
+    $('closeButton').addEventListener('click', closeUI);
+    $('certCloseButton').addEventListener('click', closeUI);
+    $('certOpenButton').addEventListener('click', showCertificate);
+    $('certBackButton').addEventListener('click', () => showMenu('samplesMenuUI'));
 
-    document.getElementById('closeButton').addEventListener('click', closeUI);
-    document.getElementById('menuBackButton').addEventListener('click', closeUI);
-    document.getElementById('certCloseButton').addEventListener('click', closeCertificate);
-    document.getElementById('certBackButton').addEventListener('click', backToMenu);
+    $('tabBtnSamples').addEventListener('click',     () => switchTab('Samples'));
+    $('tabBtnLeaderboard').addEventListener('click', () => switchTab('Leaderboard'));
+    $('tabBtnStats').addEventListener('click',       () => switchTab('Stats'));
 
-    document.getElementById('tabBtnSamples').addEventListener('click',     () => switchTab('Samples'));
-    document.getElementById('tabBtnLeaderboard').addEventListener('click', () => switchTab('Leaderboard'));
-    document.getElementById('tabBtnStats').addEventListener('click',       () => switchTab('Stats'));
+    $('searchSamplesInput').addEventListener('input',    e => applyFilter(e.target.value));
+    $('searchCollectorsInput').addEventListener('input', e => filterCollectors(e.target.value));
 
-    document.getElementById('searchSamplesInput').addEventListener('input', e => {
-        applyFilter(e.target.value);
-    });
-
-    document.getElementById('searchCollectorsInput').addEventListener('input', e => {
-        filterCollectors(e.target.value);
-    });
-
-    document.getElementById('loadMoreButton').addEventListener('click', () => {
-        displayedCount += 10;
+    $('loadMoreButton').addEventListener('click', () => {
+        displayedCount += PAGE_SIZE;
         renderSamples();
     });
 
     document.addEventListener('keydown', e => {
-        if (e.key !== 'Escape') return;
-        // Close cert first if open, then main menu
-        if (!document.getElementById('certOverlay').classList.contains('hidden')) {
-            closeCertificate();
-        } else if (!document.getElementById('samplesMenuUI').classList.contains('hidden')) {
-            closeUI();
-        }
+        if (e.key !== 'Escape' && e.key !== 'Backspace') return;
+        if (e.key === 'Backspace' && document.activeElement && document.activeElement.tagName === 'INPUT') return;
+        // Certificate → back to menu (unless it was opened directly), menu → close
+        const certOpen = !$('certOverlay').classList.contains('hidden');
+        if (certOpen && e.key === 'Backspace') showMenu('samplesMenuUI');
+        else if (certOpen || !$('samplesMenuUI').classList.contains('hidden')) closeUI();
     });
 });
 
-// ============================================================
-// NUI Message Handler
-// ============================================================
 window.addEventListener('message', event => {
     const data = event.data;
     if (!data || !data.action) return;
 
-    // ---- Open full menu ----
-    if (data.action === 'openSamplesMenu') {
+    if (data.action === 'openSamplesMenu' || data.action === 'openCertificate') {
         setupState(data);
-        applyLang();
-
-        activeCategory = 'All';
-        filteredSamples = Object.entries(allSamples).map(([hash, d]) => ({
-            hash,
-            name:      d.name      || 'unknown',
-            reward:    d.reward    || 0,
-            category:  d.category  || 'Exotic',
-            legendary: d.legendary || false,
-        }));
-
-        buildCategoryTabs();
-        displayedCount = 10;
-
-        // Ensure My Samples tab is active
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-        document.getElementById('tabBtnSamples').classList.add('active');
-        document.getElementById('tabSamples').classList.add('active');
-
-        renderSamples();
-        showMenu('samplesMenuUI');
-
-    // ---- Open certificate directly ----
-    } else if (data.action === 'openCertificate') {
-        setupState(data);
-        applyLang();
-        showCertificate();
-
-    // ---- Force close ----
+        if (data.action === 'openCertificate') showCertificate();
+        else showMenu('samplesMenuUI');
     } else if (data.action === 'closeUI') {
-        hideAllMenus();
+        closeUI();
     }
 });

@@ -66,5 +66,9 @@
     "cert_issued_date": "Ημερομηνία Έκδοσης",
     "cert_close": "Κλείσιμο",
     "cert_signed": "Διευθυντής Φυσιοδιφικών Σπουδών",
-    "cert_footer": "— Επίσημο Αρχείο Έρευνας Πεδίου —"
+    "cert_footer": "— Επίσημο Αρχείο Έρευνας Πεδίου —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

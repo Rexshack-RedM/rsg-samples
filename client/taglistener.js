@@ -1,19 +1,13 @@
-let tagTick = setTick(async() => {
-    let AIEvents = GetNumberOfEvents(0)
-    if(AIEvents>0){
-        let buffer = new ArrayBuffer(256);
-        let view = new DataView(buffer);
-        for (let eventkey = 0; eventkey < AIEvents; eventkey++) {
-            const element = GetEventAtIndex(0, eventkey);
-            switch(element){
-                case 1553659161:
-                    Citizen.invokeNative("0x57EC5FA4D4D6AFCA", 0, eventkey, view, 3, Citizen.returnResultAnyway());
-                    let ReviveData = new Int32Array(buffer);
-                    TriggerEvent('rsg-samples:ReviveData', ReviveData[2])
-                break;
-                default:
-                   //nah
-            }
-        }
+// Listens for the game's animal revive AI event and forwards it to client/main.lua
+const EVENT_REVIVE = 1553659161;
+const buffer = new ArrayBuffer(256);
+const view = new DataView(buffer);
+
+setTick(() => {
+    const count = GetNumberOfEvents(0);
+    for (let i = 0; i < count; i++) {
+        if (GetEventAtIndex(0, i) !== EVENT_REVIVE) continue;
+        Citizen.invokeNative('0x57EC5FA4D4D6AFCA', 0, i, view, 3, Citizen.returnResultAnyway());
+        TriggerEvent('rsg-samples:ReviveData', new Int32Array(buffer)[2]);
     }
-})
+});

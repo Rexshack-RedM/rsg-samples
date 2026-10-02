@@ -66,5 +66,9 @@
     "cert_issued_date": "Fecha de Emisión",
     "cert_close": "Cerrar",
     "cert_signed": "Director de Estudios Naturalistas",
-    "cert_footer": "— Registro Oficial de Investigación de Campo —"
+    "cert_footer": "— Registro Oficial de Investigación de Campo —",
+    "ui_view_cert": "View Certificate",
+    "sample_invalid": "No valid sedated animal nearby to sample",
+    "featured_invalid": "Unknown animal: %s",
+    "cmd_setfeatured_arg": "Animal name (leave blank to clear)"
 }

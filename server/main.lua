@@ -1,21 +1,18 @@
 --------------------------------------------------------------------------------------------
--- RSG SAMPLES — Server Editable
--- RSG-Core import, animal map, and all server-side game logic.
+-- RSG SAMPLES — Server: animal map, sampling rewards, menu data, commands
 --------------------------------------------------------------------------------------------
 local RSGCore = exports['rsg-core']:GetCoreObject()
 
---------------------------------------------------------------------------------------------
--- BELOW ARE DEPENDENCIES. IF REMOVED, CODE WILL FAIL. EDIT, BUT DO NOT REMOVE THESE.
---------------------------------------------------------------------------------------------
+local MAX_SAMPLE_DISTANCE = 5.0     -- metres between player and animal when submitting a sample
+local MENU_COOLDOWN       = 2000    -- ms between menu/leaderboard requests per player
+local STATS_CACHE_TIME    = 30000   -- ms the leaderboard + global stats are cached
 
--- Runtime featured animal (starts from config, can be changed live with /setfeatured)
-local featuredAnimal = Config.FeaturedAnimal
+local featuredAnimal = Config.FeaturedAnimal or ''
 
 --------------------------------------------------------------------------------------------
--- Animal Hash Map
--- Each entry: { name, reward, category, legendary }
+-- Animal Hash Map  —  [model hash] = { name, reward, category, legendary }
 -- Categories: 'Predator' | 'Bird' | 'Reptile' | 'Ungulate' | 'Small Game' | 'Exotic'
--- NOTE: Duplicate keys in the original script have been resolved below (last value wins).
+-- Only animals listed here can be sampled.
 --------------------------------------------------------------------------------------------
 local hashToAnimalMap = {
     -- ===== PREDATORS =====
@@ -70,12 +67,11 @@ local hashToAnimalMap = {
     [-2004866590] = { name = 'large_alligator',                reward = 400,  category = 'Reptile',    legendary = false },
     [-1295720802] = { name = 'alligator',                      reward = 350,  category = 'Reptile',    legendary = false },
     [-1892280447] = { name = 'alligator_swamp',                reward = 350,  category = 'Reptile',    legendary = false },
-    [3360517226]  = { name = 'alligator_giant',                reward = 350,  category = 'Reptile',    legendary = false },
+    [-934450070]  = { name = 'alligator_giant',                reward = 350,  category = 'Reptile',    legendary = false },
     [825523615]   = { name = 'alligator_pelt',                 reward = 300,  category = 'Reptile',    legendary = false },
 
     -- ===== UNGULATES =====
-    -- FIXME: this key (-15687816381) is outside the signed 32-bit range GetEntityModel() returns (11 digits, max is ~10), so it can never match a real bighorn ped -- this entry is currently dead. Looks like a typo (one digit too many) in the original script; not guessing a replacement since it can't be verified from here. Get the real hash (e.g. print(GetEntityModel(ped)) while aiming at a bighorn in-game) and fix the key below.
-    [-15687816381] = { name = 'bighorn',                        reward = 300,  category = 'Ungulate',   legendary = false }, -- BROKEN KEY, see FIXME above
+    [-1568716381] = { name = 'bighorn',                        reward = 300,  category = 'Ungulate',   legendary = false },
     [-1963605336] = { name = 'buck',                           reward = 250,  category = 'Ungulate',   legendary = false },
     [1556473961]  = { name = 'bison',                          reward = 1200, category = 'Ungulate',   legendary = false },
     [195700131]   = { name = 'bull',                           reward = 150,  category = 'Ungulate',   legendary = false },
@@ -102,354 +98,315 @@ local hashToAnimalMap = {
     [2028722809]  = { name = 'boar',                           reward = 200,  category = 'Small Game', legendary = false },
 }
 
---------------------------------------------------------------------------------------------
--- Helper: send an ox_lib notify to a player
---------------------------------------------------------------------------------------------
-local templateToType = {
-    ERROR         = 'error',
-    INFO          = 'inform',
-    SUCCESS       = 'success',
-    TIP_CASH      = 'success',
-    REWARD_MONEY  = 'success',
-}
-
-local function Notify(src, options, template)
-    options.type = options.type or templateToType[template] or 'inform'
-    TriggerClientEvent('ox_lib:notify', src, options)
+local animalNames = {}
+for _, data in pairs(hashToAnimalMap) do
+    animalNames[data.name] = true
 end
 
 --------------------------------------------------------------------------------------------
--- RSG_ServerSampleHandler
--- Called by server/tagging.lua for every sampling event.
---
--- SECURITY NOTES:
--- The client picks *when* to fire this event and *which* animal hash to send — RedM gives us
--- no reliable server-side way to verify the player was actually next to a sedated animal, so
--- this event can be spammed with any hash by a modified client. What we CAN and DO close here:
---   1. A per-citizenid in-flight lock, so two overlapping calls for the same player can never
---      both pass the "have they collected this already" check before either one is written to
---      the DB (previously: SELECT-then-async-INSERT, which raced and paid out duplicate/
---      first-discovery/milestone rewards if the same event was fired twice within ~one DB
---      round trip).
---   2. An atomic `INSERT IGNORE`, so the duplicate check and the insert can't be TOCTOU'd even
---      without the lock (defense in depth).
---   3. A server-side cooldown (Config.SampleCooldown), so a single player can't hammer this
---      event faster than a legitimate hold-to-sample ever could.
+-- Helpers
 --------------------------------------------------------------------------------------------
-local processingPlayers = {}
-local lastSampleAt      = {}
-
-function RSG_ServerSampleHandler(src, sampleHash)
-    local player = RSGCore.Functions.GetPlayer(src)
-    if not player then
-        if Config.DebugServer then print('[rsg-samples] RSG_ServerSampleHandler: player not found for src', src) end
-        return { success = false, message = 'Player not found' }
+local function notify(src, description, nType, extra)
+    local data = { title = locale('ui_title'), description = description, type = nType or 'inform', duration = 5000 }
+    if extra then
+        for k, v in pairs(extra) do data[k] = v end
     end
+    TriggerClientEvent('ox_lib:notify', src, data)
+end
 
-    sampleHash = tonumber(sampleHash)
-    local citizenid = player.PlayerData.citizenid
-
-    -- Cooldown — reject anything faster than a real sample could ever complete
-    local now = GetGameTimer()
-    if lastSampleAt[citizenid] and (now - lastSampleAt[citizenid]) < Config.SampleCooldown then
-        if Config.DebugServer then print('[rsg-samples] Cooldown block for', citizenid) end
-        return { success = false, message = 'cooldown' }
-    end
-
-    -- In-flight lock — prevents two concurrent calls for the same player from both slipping
-    -- past the duplicate check before either write lands
-    if processingPlayers[citizenid] then
-        if Config.DebugServer then print('[rsg-samples] Concurrent sample rejected for', citizenid) end
-        return { success = false, message = 'busy' }
-    end
-    processingPlayers[citizenid] = true
-    lastSampleAt[citizenid]      = now
-
-    local ok, result = pcall(function()
-        local animalData = hashToAnimalMap[sampleHash] or { name = 'unknown_animal', reward = 100, category = 'Exotic', legendary = false }
-        local animalName = animalData.name
-        local reward      = animalData.reward
-
-        -- Apply featured animal multiplier
-        local isFeatured = (animalName == featuredAnimal and featuredAnimal ~= '')
-        if isFeatured then
-            reward = reward * Config.FeaturedMultiplier
-        end
-
-        if Config.StoreSampleData then
-            -- Atomic dedupe: INSERT IGNORE relies on the UNIQUE KEY(citizenid, sample_id) to
-            -- reject a repeat in the same statement that records it — no separate SELECT that
-            -- something else can race against.
-            local insertId = MySQL.insert.await(
-                'INSERT IGNORE INTO player_samples (citizenid, sample_id) VALUES (?, ?)',
-                { citizenid, animalName }
-            )
-            if not insertId or insertId == 0 then
-                Notify(src, { description = locale('already_collected') }, 'ERROR')
-                if Config.DebugServer then print('[rsg-samples] Already collected:', animalName, 'for', citizenid) end
-                return { success = false, message = 'already_collected' }
-            end
-
-            -- First discovery check — runs AFTER our own insert is committed, so a count of 1
-            -- reliably means we were first even if another player's discovery of a different
-            -- animal happens at the same moment.
-            local firstDiscoveryCount = MySQL.scalar.await(
-                'SELECT COUNT(*) FROM player_samples WHERE sample_id = ?',
-                { animalName }
-            )
-            if firstDiscoveryCount == 1 and Config.FirstDiscoveryBonus > 0 then
-                player.Functions.AddMoney('cash', Config.FirstDiscoveryBonus)
-                Notify(src, {
-                    title       = locale('ui_title'),
-                    description = string.format(locale('first_discovery'), animalName, Config.FirstDiscoveryBonus),
-                    icon        = 'star',
-                    duration    = 7000,
-                }, 'REWARD_MONEY')
-                if Config.DebugServer then print('[rsg-samples] First discovery bonus awarded for:', animalName) end
-            end
-
-            -- Milestone reward check
-            local totalCount = MySQL.scalar.await(
-                'SELECT COUNT(*) FROM player_samples WHERE citizenid = ?',
-                { citizenid }
-            )
-            local milestone = Config.MilestoneRewards[totalCount]
-            if milestone then
-                player.Functions.AddMoney('cash', milestone.bonus)
-                Notify(src, {
-                    description = string.format(locale('milestone_reached'), milestone.label, milestone.bonus),
-                    icon        = 'awards_set_a_009',
-                    duration    = 7000,
-                }, 'REWARD_MONEY')
-                if Config.DebugServer then print('[rsg-samples] Milestone reached:', milestone.label, 'for', citizenid) end
-            end
-        end
-
-        -- Award base (or multiplied) cash
-        player.Functions.AddMoney('cash', reward)
-
-        if isFeatured then
-            Notify(src, {
-                description = string.format(locale('sample_featured'), animalName, reward, Config.FeaturedMultiplier),
-                icon        = 'toast_mp_animal',
-                duration    = 6000,
-            }, 'REWARD_MONEY')
-        else
-            Notify(src, {
-                description = string.format(locale('sample_collected'), animalName, reward),
-                icon        = 'toast_mp_animal',
-            }, 'TIP_CASH')
-        end
-
-        if Config.DebugServer then
-            print('[rsg-samples] Sampled:', animalName, 'src:', src, 'reward: $' .. reward,
-                  isFeatured and '(FEATURED x' .. Config.FeaturedMultiplier .. ')' or '')
-        end
-
-        return { success = true, animal = animalName, reward = reward }
-    end)
-
-    processingPlayers[citizenid] = nil
-
-    if not ok then
-        if Config.DebugServer then print('[rsg-samples] ERROR in RSG_ServerSampleHandler:', result) end
-        return { success = false, message = 'error' }
-    end
-
-    return result
+local function debugPrint(...)
+    if Config.DebugServer then print('[rsg-samples]', ...) end
 end
 
 --------------------------------------------------------------------------------------------
--- Build (and cache) the locale table sent to the NUI
--- Locales are static at runtime, so this only actually gets built once per resource start
--- instead of on every /samplesmenu, /samplecert, and leaderboard interaction.
+-- Cached leaderboard + global stats (shared by every player opening the menu)
 --------------------------------------------------------------------------------------------
-local cachedLang = nil
+local statsCache = { expires = 0 }
 
-local function RSG_BuildLang()
-    if cachedLang then return cachedLang end
+local function invalidateStats()
+    statsCache.expires = 0
+end
 
+local function getSharedStats()
+    if GetGameTimer() < statsCache.expires then return statsCache end
+
+    local top = MySQL.query.await([[
+        SELECT t.citizenid, t.cnt AS sample_count,
+               CONCAT(JSON_UNQUOTE(JSON_EXTRACT(p.charinfo, '$.firstname')), ' ',
+                      JSON_UNQUOTE(JSON_EXTRACT(p.charinfo, '$.lastname'))) AS name
+        FROM (SELECT citizenid, COUNT(*) AS cnt FROM player_samples GROUP BY citizenid ORDER BY cnt DESC LIMIT 10) t
+        LEFT JOIN players p ON p.citizenid = t.citizenid
+        ORDER BY t.cnt DESC
+    ]]) or {}
+
+    local ranked = {}
+    for i, row in ipairs(top) do
+        ranked[i] = { rank = i, citizenid = row.citizenid, name = row.name or row.citizenid, sample_count = row.sample_count }
+    end
+
+    local total  = MySQL.scalar.await('SELECT COUNT(*) FROM player_samples') or 0
+    local rarest = MySQL.single.await([[
+        SELECT sample_id, COUNT(*) AS collectors FROM player_samples
+        GROUP BY sample_id ORDER BY collectors ASC LIMIT 1
+    ]])
+    local weekly = MySQL.single.await([[
+        SELECT t.cnt,
+               CONCAT(JSON_UNQUOTE(JSON_EXTRACT(p.charinfo, '$.firstname')), ' ',
+                      JSON_UNQUOTE(JSON_EXTRACT(p.charinfo, '$.lastname'))) AS name
+        FROM (SELECT citizenid, COUNT(*) AS cnt FROM player_samples
+              WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+              GROUP BY citizenid ORDER BY cnt DESC LIMIT 1) t
+        LEFT JOIN players p ON p.citizenid = t.citizenid
+    ]])
+
+    statsCache = {
+        expires       = GetGameTimer() + STATS_CACHE_TIME,
+        topCollectors = ranked,
+        globalStats   = {
+            totalCollected = total,
+            rarestAnimal   = rarest and rarest.sample_id or nil,
+            rarestCount    = rarest and rarest.collectors or 0,
+            weeklyTopName  = weekly and weekly.name or nil,
+            weeklyTopCount = weekly and weekly.cnt or 0,
+        },
+    }
+    return statsCache
+end
+
+--------------------------------------------------------------------------------------------
+-- Locale table sent to the NUI (built once — locales are static at runtime)
+--------------------------------------------------------------------------------------------
+local nuiLang
+
+local function getNuiLang()
+    if nuiLang then return nuiLang end
     local keys = {
-        'ui_title','ui_subtitle','ui_tab_samples','ui_tab_leaderboard','ui_tab_stats','ui_close',
+        'ui_title','ui_subtitle','ui_tab_samples','ui_tab_leaderboard','ui_tab_stats','ui_close','ui_view_cert',
         'ui_field_guide','ui_search_guide','ui_find_collector',
         'ui_progress_label','ui_total_rewards','ui_search_samples','ui_load_more',
         'ui_no_samples','ui_reward','ui_collected_on','ui_legendary','ui_featured',
         'cat_all','cat_predator','cat_bird','cat_reptile','cat_ungulate','cat_small_game','cat_exotic',
         'ui_top_collectors','ui_search_collectors','ui_no_collectors','ui_samples_count','ui_rank_prefix',
-        'ui_global_stats','ui_total_all','ui_rarest_animal','ui_rarest_sub',
+        'ui_total_all','ui_rarest_animal','ui_rarest_sub','ui_global_stats',
         'ui_weekly_top','ui_weekly_sub','ui_no_weekly','ui_no_stats',
         'ui_featured_now','ui_featured_mult','ui_no_featured',
-        'cert_title','cert_subtitle','cert_back','cert_issued_to','cert_completion','cert_total_rewards',
+        'cert_title','cert_subtitle','cert_back','cert_completion','cert_total_rewards','cert_issued_to',
         'cert_legendary_count','cert_featured_animal','cert_issued_date',
         'cert_close','cert_signed','cert_footer',
     }
-    local t = {}
-    for _, k in ipairs(keys) do
-        t[k] = locale(k)
-    end
-    cachedLang = t
-    return t
+    nuiLang = {}
+    for _, k in ipairs(keys) do nuiLang[k] = locale(k) end
+    return nuiLang
 end
 
 --------------------------------------------------------------------------------------------
--- Fetch global stats for the Stats tab
+-- Sampling
+--
+-- The client only sends the network id of the animal it sampled. The server resolves the
+-- entity itself, reads the model hash, and checks the player is actually standing next to a
+-- living, non-player ped — so a modified client can't claim arbitrary animals from anywhere.
+-- Duplicates are blocked atomically by the UNIQUE KEY (INSERT IGNORE), plus a per-player
+-- in-flight lock and cooldown.
 --------------------------------------------------------------------------------------------
-local function RSG_FetchGlobalStats()
-    local totalRow = MySQL.scalar.await('SELECT COUNT(*) FROM player_samples')
+local busy        = {}   -- [citizenid] = true while a sample is being processed
+local lastSample  = {}   -- [citizenid] = GetGameTimer()
+local memCollected = {}  -- [citizenid] = { [name] = true }  (only used when StoreSampleData = false)
 
-    local rarestRow = MySQL.query.await([[
-        SELECT sample_id, COUNT(DISTINCT citizenid) AS collectors
-        FROM player_samples
-        GROUP BY sample_id
-        ORDER BY collectors ASC
-        LIMIT 1
-    ]])
-
-    local weeklyRow = MySQL.query.await([[
-        SELECT p.name, COUNT(ps.sample_id) AS cnt
-        FROM player_samples ps
-        JOIN players p ON ps.citizenid = p.citizenid
-        WHERE ps.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-        GROUP BY p.citizenid, p.name
-        ORDER BY cnt DESC
-        LIMIT 1
-    ]])
-
-    return {
-        totalCollected  = totalRow or 0,
-        rarestAnimal    = rarestRow and rarestRow[1] and rarestRow[1].sample_id or nil,
-        rarestCount     = rarestRow and rarestRow[1] and rarestRow[1].collectors or 0,
-        weeklyTopName   = weeklyRow and weeklyRow[1] and weeklyRow[1].name or nil,
-        weeklyTopCount  = weeklyRow and weeklyRow[1] and weeklyRow[1].cnt or 0,
-        featuredAnimal  = featuredAnimal,
-        featuredMult    = Config.FeaturedMultiplier,
-    }
+-- Server natives can return model hashes unsigned; the map uses signed 32-bit keys
+local function toSigned(hash)
+    hash = tonumber(hash) or 0
+    if hash > 0x7FFFFFFF then hash = hash - 0x100000000 end
+    return math.tointeger(hash) or hash
 end
 
---------------------------------------------------------------------------------------------
--- Build and send all menu data to a player
--- viewMode: 'menu' (default) | 'certificate'
---------------------------------------------------------------------------------------------
-local function RSG_SendSamplesMenu(source, viewMode)
-    local player = RSGCore.Functions.GetPlayer(source)
-    if not player then return end
+local function reject(reason, ...)
+    debugPrint('Sample rejected:', reason, ...)
+    return nil
+end
 
-    local citizenid  = player.PlayerData.citizenid
-    local charinfo   = player.PlayerData.charinfo
-    local playerName = (charinfo and (charinfo.firstname .. ' ' .. charinfo.lastname))
-                       or player.PlayerData.name
-                       or 'Unknown'
+-- NOTE: server-side ped health isn't reliably synced in RedM, so liveness is checked on the
+-- client (the prompt only exists for living sedated peds); the server checks existence,
+-- type, model and distance.
+local function resolveAnimal(src, netId)
+    netId = tonumber(netId)
+    if not netId then return reject('bad netId', netId) end
 
-    -- Player's collected samples
-    local playerSamples  = MySQL.query.await(
-        'SELECT sample_id, created_at FROM player_samples WHERE citizenid = ?',
-        { citizenid }
-    )
-    local collectedSamples = {}
-    for _, row in ipairs(playerSamples) do
-        collectedSamples[row.sample_id] = { collected = true, created_at = row.created_at }
+    local entity = NetworkGetEntityFromNetworkId(netId)
+    if not entity or entity == 0 or not DoesEntityExist(entity) then return reject('entity not found', netId) end
+    if GetEntityType(entity) ~= 1 then return reject('not a ped', netId) end
+    if IsPedAPlayer(entity) then return reject('is a player', netId) end
+
+    local dist = #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(entity))
+    if dist > MAX_SAMPLE_DISTANCE then return reject('too far', ('%.1fm'):format(dist)) end
+
+    local model  = toSigned(GetEntityModel(entity))
+    local animal = hashToAnimalMap[model]
+    if not animal then return reject('model not in hashToAnimalMap', model) end
+    return animal
+end
+
+local function recordSample(citizenid, name)
+    if Config.StoreSampleData then
+        local affected = MySQL.update.await(
+            'INSERT IGNORE INTO player_samples (citizenid, sample_id) VALUES (?, ?)', { citizenid, name })
+        return affected and affected > 0
+    end
+    memCollected[citizenid] = memCollected[citizenid] or {}
+    if memCollected[citizenid][name] then return false end
+    memCollected[citizenid][name] = true
+    return true
+end
+
+local function processSample(src, Player, animal)
+    local citizenid = Player.PlayerData.citizenid
+    local name      = animal.name
+
+    if not recordSample(citizenid, name) then
+        notify(src, locale('already_collected'), 'error')
+        return
+    end
+    invalidateStats()
+
+    -- Base reward (featured multiplier applied server-side)
+    local isFeatured = featuredAnimal ~= '' and name == featuredAnimal
+    local reward     = isFeatured and math.floor(animal.reward * Config.FeaturedMultiplier) or animal.reward
+    Player.Functions.AddMoney('cash', reward, 'rsg-samples:sample')
+
+    if isFeatured then
+        notify(src, locale('sample_featured', name, reward, Config.FeaturedMultiplier), 'success', { duration = 6000 })
+    else
+        notify(src, locale('sample_collected', name, reward), 'success')
     end
 
-    -- Top 10 leaderboard
-    local topCollectors = MySQL.query.await([[
-        SELECT p.citizenid, p.name, COUNT(ps.sample_id) AS sample_count
-        FROM player_samples ps
-        JOIN players p ON ps.citizenid = p.citizenid
-        GROUP BY p.citizenid, p.name
-        ORDER BY sample_count DESC
-        LIMIT 10
-    ]])
-    local rankedCollectors = {}
-    for i, row in ipairs(topCollectors) do
-        table.insert(rankedCollectors, {
-            rank         = i,
-            citizenid    = row.citizenid,
-            name         = row.name,
-            sample_count = row.sample_count,
-        })
+    if not Config.StoreSampleData then return end
+
+    -- First discovery: our row is already committed, so a count of 1 means we were first
+    if Config.FirstDiscoveryBonus > 0 then
+        local count = MySQL.scalar.await('SELECT COUNT(*) FROM player_samples WHERE sample_id = ?', { name })
+        if count == 1 then
+            Player.Functions.AddMoney('cash', Config.FirstDiscoveryBonus, 'rsg-samples:first-discovery')
+            notify(src, locale('first_discovery', name, Config.FirstDiscoveryBonus), 'success', { duration = 7000 })
+        end
     end
 
-    TriggerClientEvent('rsg-samples:openSamplesMenu', source, {
-        viewMode         = viewMode or 'menu',
-        allSamples       = hashToAnimalMap,
-        collectedSamples = collectedSamples,
-        topCollectors    = rankedCollectors,
-        globalStats      = RSG_FetchGlobalStats(),
-        currentCitizenId = citizenid,
-        playerName       = playerName,
-        featuredAnimal   = featuredAnimal,
+    -- Milestones
+    local total     = MySQL.scalar.await('SELECT COUNT(*) FROM player_samples WHERE citizenid = ?', { citizenid })
+    local milestone = Config.MilestoneRewards[total]
+    if milestone then
+        Player.Functions.AddMoney('cash', milestone.bonus, 'rsg-samples:milestone')
+        notify(src, locale('milestone_reached', milestone.label, milestone.bonus), 'success', { duration = 7000 })
+    end
+
+    debugPrint('Sampled', name, 'by', citizenid, 'reward $' .. reward, isFeatured and '(featured)' or '')
+end
+
+RegisterNetEvent('rsg-samples:server:sampleAnimal', function(netId)
+    local src    = source
+    local Player = RSGCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    local citizenid = Player.PlayerData.citizenid
+    local now       = GetGameTimer()
+    if busy[citizenid] or (lastSample[citizenid] and now - lastSample[citizenid] < Config.SampleCooldown) then
+        debugPrint('Rate limited', citizenid)
+        return
+    end
+
+    local animal = resolveAnimal(src, netId)
+    if not animal then
+        notify(src, locale('sample_invalid'), 'error')
+        debugPrint('Rejected sample from', src, 'netId', netId)
+        return
+    end
+
+    busy[citizenid]       = true
+    lastSample[citizenid] = now
+    local ok, err = pcall(processSample, src, Player, animal)
+    busy[citizenid] = nil
+    if not ok then print('[rsg-samples] ^1sample error:^7', err) end
+end)
+
+--------------------------------------------------------------------------------------------
+-- Menu
+--------------------------------------------------------------------------------------------
+local lastMenu = {}
+
+local function sendMenu(src, viewMode)
+    local Player = RSGCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    local now = GetGameTimer()
+    if lastMenu[src] and now - lastMenu[src] < MENU_COOLDOWN then return end
+    lastMenu[src] = now
+
+    local pd        = Player.PlayerData
+    local charinfo  = pd.charinfo or {}
+    local collected = {}
+
+    if Config.StoreSampleData then
+        local rows = MySQL.query.await('SELECT sample_id, created_at FROM player_samples WHERE citizenid = ?', { pd.citizenid }) or {}
+        for _, row in ipairs(rows) do
+            collected[row.sample_id] = { created_at = row.created_at }
+        end
+    else
+        for name in pairs(memCollected[pd.citizenid] or {}) do collected[name] = {} end
+    end
+
+    local shared = getSharedStats()
+    TriggerClientEvent('rsg-samples:client:openSamplesMenu', src, {
+        viewMode           = viewMode,
+        allSamples         = hashToAnimalMap,
+        collectedSamples   = collected,
+        topCollectors      = shared.topCollectors,
+        globalStats        = shared.globalStats,
+        currentCitizenId   = pd.citizenid,
+        playerName         = charinfo.firstname and (charinfo.firstname .. ' ' .. (charinfo.lastname or '')) or pd.name,
+        featuredAnimal     = featuredAnimal,
         featuredMultiplier = Config.FeaturedMultiplier,
-        lang             = RSG_BuildLang(),
+        lang               = getNuiLang(),
     })
-
-    if Config.DebugServer then
-        print('[rsg-samples] RSG_SendSamplesMenu → src:', source, 'mode:', viewMode or 'menu')
-    end
 end
 
---------------------------------------------------------------------------------------------
--- Command: /samplesmenu — open the full collector UI
---------------------------------------------------------------------------------------------
 RSGCore.Commands.Add('samplesmenu', locale('cmd_samplesmenu'), {}, false, function(source)
-    RSG_SendSamplesMenu(source, 'menu')
+    sendMenu(source, 'menu')
 end)
 
---------------------------------------------------------------------------------------------
--- Command: /samplecert — open just the certificate overlay
---------------------------------------------------------------------------------------------
 RSGCore.Commands.Add('samplecert', locale('cmd_samplecert'), {}, false, function(source)
-    RSG_SendSamplesMenu(source, 'certificate')
+    sendMenu(source, 'certificate')
+end)
+
+RegisterNetEvent('rsg-samples:server:requestMenu', function()
+    local src = source
+    local loc = Config.LeaderboardLocation
+    if #(GetEntityCoords(GetPlayerPed(src)) - loc.coords) > loc.radius + 5.0 then return end
+    sendMenu(src, 'menu')
 end)
 
 --------------------------------------------------------------------------------------------
--- Command: /setfeatured [animal_name] — admin only
--- Requires:  add_ace group.admin rsg-samples.admin allow  in server.cfg
--- Usage:     /setfeatured bear     sets featured animal to 'bear'
---            /setfeatured          clears the featured animal
+-- /setfeatured [animal_name]  — admin only (ace: rsg-samples.admin)
 --------------------------------------------------------------------------------------------
 RSGCore.Commands.Add('setfeatured', locale('cmd_setfeatured'), {
-    { name = 'animal', help = 'Animal name (leave blank to clear)' }
+    { name = 'animal', help = locale('cmd_setfeatured_arg') }
 }, false, function(source, args)
-    if not IsPlayerAceAllowed(tostring(source), 'rsg-samples.admin') then
-        Notify(source, { description = locale('no_permission') }, 'ERROR')
+    if source > 0 and not IsPlayerAceAllowed(tostring(source), 'rsg-samples.admin') then
+        notify(source, locale('no_permission'), 'error')
         return
     end
 
     local newAnimal = args[1] and args[1]:lower() or ''
-    featuredAnimal  = newAnimal
-
-    if newAnimal ~= '' then
-        Notify(source, {
-            description = string.format(locale('featured_set'), newAnimal),
-            icon        = 'star',
-        }, 'SUCCESS')
-    else
-        Notify(source, { description = locale('featured_cleared') }, 'INFO')
+    if newAnimal ~= '' and not animalNames[newAnimal] then
+        if source > 0 then notify(source, locale('featured_invalid', newAnimal), 'error') end
+        return
     end
 
-    if Config.DebugServer then
-        print('[rsg-samples] featuredAnimal set to:', featuredAnimal, 'by src:', source)
+    featuredAnimal = newAnimal
+    if source > 0 then
+        notify(source, newAnimal ~= '' and locale('featured_set', newAnimal) or locale('featured_cleared'),
+            newAnimal ~= '' and 'success' or 'inform')
     end
+    debugPrint('Featured animal set to', featuredAnimal, 'by', source)
 end)
 
---------------------------------------------------------------------------------------------
--- Event: rsg-samples:requestLeaderboard (triggered by ox_target zone in client/target.lua)
---------------------------------------------------------------------------------------------
-RegisterNetEvent('rsg-samples:requestLeaderboard')
-AddEventHandler('rsg-samples:requestLeaderboard', function()
-    local src = source
-    RSG_SendSamplesMenu(src, 'menu')
-    if Config.DebugServer then
-        print('[rsg-samples] requestLeaderboard from src:', src)
-    end
-end)
-
---------------------------------------------------------------------------------------------
--- Event: rsg-samples:closeUI (optional server-side hook)
---------------------------------------------------------------------------------------------
-RegisterNetEvent('rsg-samples:closeUI')
-AddEventHandler('rsg-samples:closeUI', function()
-    if Config.DebugServer then
-        print('[rsg-samples] closeUI from src:', source)
-    end
+AddEventHandler('playerDropped', function()
+    lastMenu[source] = nil
 end)
